@@ -29,8 +29,10 @@ public sealed class GeoController(
         if (maxLevel < 0 || maxLevel > 25)
             return Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid maxLevel", detail: "maxLevel debe estar entre 0 y 25.");
 
-        if (!string.IsNullOrWhiteSpace(iso3))
-            iso3 = iso3.Trim().ToUpperInvariant();
+        // iso3 es OPCIONAL:
+        // - null/empty => IMPORTAR TODOS LOS PAÍSES
+        // - valor => importar ese país
+        iso3 = !string.IsNullOrWhiteSpace(iso3) ? iso3.Trim().ToUpperInvariant() : null;
 
         var summary = await importService.ImportAllAsync(hardReset, iso3, maxLevel, ct);
         return Ok(summary);
@@ -141,7 +143,6 @@ public sealed class GeoController(
         return dto is null ? (ActionResult<AdminAreaGeoJsonDto>)NotFound() : dto.GeoJson is null ? NoContent() : Ok(dto);
     }
 
-    // Mantén WKT solo si quieres debug. Si no lo necesitas, bórralo.
     [HttpGet("admin-areas/{id:long}/geometry")]
     [ProducesResponseType(typeof(AdminAreaGeometryDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
@@ -204,10 +205,10 @@ public sealed class GeoController(
             return Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid request", detail: "Body obligatorio.");
 
         if (string.IsNullOrWhiteSpace(req.Address))
-            return Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid address", detail: "Address es obligatorio.");
+            return Problem(statusCode: 400, title: "Invalid address", detail: "Address es obligatorio.");
 
         if (string.IsNullOrWhiteSpace(req.Iso3))
-            return Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid iso3", detail: "Iso3 es obligatorio por ahora (para evitar ambigüedad mundial).");
+            return Problem(statusCode: 400, title: "Invalid iso3", detail: "Iso3 es obligatorio por ahora (para evitar ambigüedad mundial).");
 
         req.Iso3 = req.Iso3.Trim().ToUpperInvariant();
 
@@ -253,10 +254,10 @@ public sealed class GeoController(
     [HttpGet("resolve-point-cte")]
     [ProducesResponseType(typeof(ResolvePointResponseDto), StatusCodes.Status200OK)]
     public async Task<ActionResult<ResolvePointResponseDto>> ResolvePointCte(
-    [FromQuery] double lat,
-    [FromQuery] double lon,
-    [FromQuery] string iso3,
-    CancellationToken ct)
+        [FromQuery] double lat,
+        [FromQuery] double lon,
+        [FromQuery] string iso3,
+        CancellationToken ct)
     {
         if (lat is < -90 or > 90)
             return Problem(statusCode: 400, title: "Invalid lat", detail: "lat debe estar entre -90 y 90.");
@@ -272,5 +273,4 @@ public sealed class GeoController(
         var result = await resolveService.ResolvePointSqlCteAsync(lat, lon, iso3, ct);
         return Ok(result);
     }
-
 }

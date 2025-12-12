@@ -19,9 +19,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddHttpContextAccessor();
 
 // HttpClients
-builder.Services.AddHttpClient("esri-admin", c => c.Timeout = TimeSpan.FromMinutes(10));
-builder.Services.AddHttpClient("arcgis-token", c => c.Timeout = TimeSpan.FromMinutes(10));
-builder.Services.AddHttpClient("arcgis-geocode", c => c.Timeout = TimeSpan.FromMinutes(10));
+builder.Services.AddHttpClient("esri-admin", c => c.Timeout = TimeSpan.FromMinutes(30));
+builder.Services.AddHttpClient("arcgis-token", c => c.Timeout = TimeSpan.FromMinutes(30));
+builder.Services.AddHttpClient("arcgis-geocode", c => c.Timeout = TimeSpan.FromMinutes(30));
 
 // Servicios
 builder.Services.AddScoped<IArcgisTokenProvider, ArcgisTokenProvider>();

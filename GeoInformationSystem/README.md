@@ -61,6 +61,3 @@ En `Postman/GeoAdminDemo.postman_collection.json` se incluye una colección con e
 - `EsriAdminImportService` encapsula importación, robustez y CSV opcional.
 - `ExceptionHandlingMiddleware` devuelve ProblemDetails coherentes.
 - Entidades y DTO documentados para Swagger.
-
-## Licencia
-MIT.

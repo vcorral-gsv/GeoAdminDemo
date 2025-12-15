@@ -3,21 +3,24 @@ using GeoAdminDemo.Dtos;
 using GeoAdminDemo.Models;
 using Microsoft.EntityFrameworkCore;
 using NetTopologySuite.Features;
+using NetTopologySuite.Geometries;
 using NetTopologySuite.IO;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.IO;
 
 namespace GeoAdminDemo.Services;
 
-public sealed class EsriAdminImportService
+public sealed class EsriAdminImportService(AppDbContext db, IHttpClientFactory httpClientFactory)
 {
-    private readonly AppDbContext _db;
-    private readonly HttpClient _http;
+    private readonly HttpClient _http = httpClientFactory.CreateClient("esri-admin");
 
     private const string BaseUrl =
         "https://server.maps.imb.org/arcgis/rest/services/Hosted/GlobalAdminBoundaries/FeatureServer";
 
     private readonly GeoJsonReader _geoJsonReader = new();
+    private readonly GeoJsonWriter _geoJsonWriter = new();
     private readonly WKTWriter _wktWriter = new();
 
     // Robustez
@@ -38,12 +41,6 @@ public sealed class EsriAdminImportService
         PropertyNameCaseInsensitive = true
     };
 
-    public EsriAdminImportService(AppDbContext db, IHttpClientFactory httpClientFactory)
-    {
-        _db = db;
-        _http = httpClientFactory.CreateClient("esri-admin");
-    }
-
     // ------------------------------
     // IMPORTACIÓN COMPLETA (resumen)
     // ------------------------------
@@ -58,7 +55,7 @@ public sealed class EsriAdminImportService
         };
 
         if (hardReset)
-            await _db.AdminAreas.ExecuteDeleteAsync(ct);
+            await db.AdminAreas.ExecuteDeleteAsync(ct);
 
         // level 0 (países)
         var (i0, u0) = await ImportLevel0Async(ct);
@@ -66,7 +63,7 @@ public sealed class EsriAdminImportService
         summary.Updated += u0;
 
         // Países a importar: si iso3Filter es null => TODOS
-        var countries = await _db.AdminAreas.AsNoTracking()
+        var countries = await db.AdminAreas.AsNoTracking()
             .Where(x => x.Level == 0 && (iso3Filter == null || x.CountryIso3 == iso3Filter))
             .Select(x => x.CountryIso3)
             .ToListAsync(ct);
@@ -139,13 +136,13 @@ public sealed class EsriAdminImportService
             swCountry.Stop();
             byIso[iso3].DurationMs = swCountry.ElapsedMilliseconds;
             // total en DB por país al finalizar
-            byIso[iso3].TotalInDb = await _db.AdminAreas.AsNoTracking()
+            byIso[iso3].TotalInDb = await db.AdminAreas.AsNoTracking()
                 .Where(x => x.CountryIso3 == iso3)
                 .CountAsync(ct);
         }
         swTotal.Stop();
         summary.DurationMs = swTotal.ElapsedMilliseconds;
-        summary.TotalInDb = await _db.AdminAreas.CountAsync(ct);
+        summary.TotalInDb = await db.AdminAreas.CountAsync(ct);
         return summary;
     }
 
@@ -177,7 +174,7 @@ public sealed class EsriAdminImportService
             summary: null,
             ct: ct);
 
-        var existing = await _db.AdminAreas
+        var existing = await db.AdminAreas
             .Where(x => x.Level == 0)
             .ToDictionaryAsync(x => x.Code, ct);
 
@@ -192,7 +189,7 @@ public sealed class EsriAdminImportService
 
             if (!existing.TryGetValue(iso3, out var row))
             {
-                _db.AdminAreas.Add(new AdminArea
+                db.AdminAreas.Add(new AdminArea
                 {
                     CountryIso3 = iso3,
                     Level = 0,
@@ -214,7 +211,7 @@ public sealed class EsriAdminImportService
             }
         }
 
-        await _db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync(ct);
         return (inserted, updated);
     }
 
@@ -241,7 +238,7 @@ public sealed class EsriAdminImportService
             ct: ct);
 
         // 2) Features
-        var outFields = $"adm0_cd,adm{level}_cd,adm{level}_nm,adm{level - 1}_cd,level_label";
+        var outFields = "*";
 
         var features = await FetchFeaturesByObjectIdsAsync(
             layer: level,
@@ -253,13 +250,55 @@ public sealed class EsriAdminImportService
             summary: summary,
             ct: ct);
 
-        var parents = await _db.AdminAreas
+        // Dump attribute schema for debugging (levels 0..3)
+        if (level is >= 0 and <= 3)
+        {
+            try
+            {
+                var dir = Path.Combine(AppContext.BaseDirectory, "DataExports");
+                Directory.CreateDirectory(dir);
+                var dumpPath = Path.Combine(dir, $"adm{level}_{iso3}_fields.json");
+
+                // Collect unique attribute names and sample values
+                var fieldSamples = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+                foreach (var f in features)
+                {
+                    var names = f.Attributes.GetNames();
+                    foreach (var n in names)
+                    {
+                        if (!fieldSamples.ContainsKey(n))
+                        {
+                            var v = f.Attributes[n]?.ToString();
+                            fieldSamples[n] = v;
+                        }
+                    }
+                }
+
+                var dumpObj = new
+                {
+                    iso3,
+                    level,
+                    count = features.Count,
+                    fields = fieldSamples.OrderBy(k => k.Key).ToDictionary(k => k.Key, k => k.Value)
+                };
+                var dumpJson = System.Text.Json.JsonSerializer.Serialize(dumpObj, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(dumpPath, dumpJson);
+            }
+            catch { /* ignore dump errors */ }
+        }
+
+        var parents = await db.AdminAreas
             .Where(x => x.CountryIso3 == iso3 && x.Level == level - 1)
             .ToDictionaryAsync(x => x.Code, ct);
 
-        var existing = await _db.AdminAreas
+        var existing = await db.AdminAreas
             .Where(x => x.CountryIso3 == iso3 && x.Level == level)
             .ToDictionaryAsync(x => x.Code, ct);
+
+        // Prepare CSV rows for levels 2 (provincias) and 3 (municipios)
+        var csvRows = new List<string>();
+        var exportCsv = level is 2 or 3;
+        var csvHeader = "Des,PaisId,ShapeId,Geometry";
 
         foreach (var f in features)
         {
@@ -275,11 +314,18 @@ public sealed class EsriAdminImportService
             var geom = f.Geometry;
             geom?.SRID = geom.SRID == 0 ? 4326 : 4326;
 
+            // Normalize polygon ring orientation for SQL Server geography
+            if (geom is not null)
+            {
+                geom = NormalizeGeographyPolygonOrientation(geom);
+                EnsureSrid4326(geom);
+            }
+
             var wkt = geom is not null ? _wktWriter.Write(geom) : null;
 
             if (!existing.TryGetValue(code, out var row))
             {
-                _db.AdminAreas.Add(new AdminArea
+                db.AdminAreas.Add(new AdminArea
                 {
                     CountryIso3 = iso3,
                     Level = level,
@@ -291,29 +337,66 @@ public sealed class EsriAdminImportService
                     GeometryWkt = wkt
                 });
                 inserted++;
-                continue;
+            }
+            else
+            {
+                var changed =
+                    row.ParentId != parent?.Id ||
+                    !string.Equals(row.Name, name, StringComparison.Ordinal) ||
+                    !string.Equals(row.LevelLabel, levelLabel, StringComparison.Ordinal) ||
+                    !string.Equals(row.GeometryWkt, wkt, StringComparison.Ordinal);
+
+                if (changed)
+                {
+                    row.ParentId = parent?.Id;
+                    row.Name = name;
+                    row.LevelLabel = levelLabel;
+                    row.Geometry = geom;
+                    row.GeometryWkt = wkt;
+                    row.UpdatedAt = DateTimeOffset.UtcNow;
+                    updated++;
+                }
             }
 
-            var changed =
-                row.ParentId != parent?.Id ||
-                !string.Equals(row.Name, name, StringComparison.Ordinal) ||
-                !string.Equals(row.LevelLabel, levelLabel, StringComparison.Ordinal) ||
-                !string.Equals(row.GeometryWkt, wkt, StringComparison.Ordinal);
-
-            if (changed)
+            if (exportCsv)
             {
-                row.ParentId = parent?.Id;
-                row.Name = name;
-                row.LevelLabel = levelLabel;
-                row.Geometry = geom;
-                row.GeometryWkt = wkt;
-                row.UpdatedAt = DateTimeOffset.UtcNow;
-                updated++;
+                // Prefer GlobalID, then OBJECTID, then code
+                var shapeId = GetAttr(f, "GlobalID") ?? GetAttr(f, "OBJECTID") ?? code;
+                // GeoJSON geometry text
+                var geometryJson = geom is not null ? _geoJsonWriter.Write(geom) : "";
+
+                var des = EscapeCsv(name);
+                var paisId = EscapeCsv(MapPaisId(iso3));
+                var shapeIdCsv = EscapeCsv(shapeId);
+                var geometryText = EscapeCsv(geometryJson);
+                csvRows.Add($"{des},{paisId},{shapeIdCsv},{geometryText}");
             }
         }
 
-        await _db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync(ct);
+
+        if (exportCsv && csvRows.Count > 0)
+        {
+            var dir = Path.Combine(AppContext.BaseDirectory, "DataExports");
+            Directory.CreateDirectory(dir);
+            var fileName = level == 2 ? $"adm2_{iso3}.csv" : $"adm3_{iso3}.csv";
+            var path = Path.Combine(dir, fileName);
+
+            var writeHeader = !File.Exists(path);
+            using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+            using var writer = new StreamWriter(stream, Encoding.UTF8);
+            if (writeHeader)
+                writer.WriteLine(csvHeader);
+            foreach (var row in csvRows)
+                writer.WriteLine(row);
+        }
+
         return (inserted, updated);
+    }
+
+    private static string MapPaisId(string iso3)
+    {
+        return iso3;
     }
 
     // ============================================================
@@ -353,7 +436,7 @@ public sealed class EsriAdminImportService
                 arcErr: dto.Error);
         }
 
-        return dto?.ObjectIds?.Select(x => (long)x).ToArray() ?? Array.Empty<long>();
+        return dto?.ObjectIds?.Select(x => (long)x).ToArray() ?? [];
     }
 
     // ============================================================
@@ -441,7 +524,7 @@ public sealed class EsriAdminImportService
             }
 
             breaker?.OnRequestSuccess(layer);
-            all.AddRange(fc.ToList());
+            all.AddRange([.. fc]);
         }
 
         return all;
@@ -496,7 +579,7 @@ public sealed class EsriAdminImportService
 
                     // NO retry para 500/4xx
                     // pero propagamos payload
-                    TryParseArcGisError(body, out var arcErr);
+                    _ = TryParseArcGisError(body, out ArcGisError? arcErr);
 
                     var msg = $"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}. Payload: {Truncate(body)}";
                     if (arcErr is not null)
@@ -552,7 +635,23 @@ public sealed class EsriAdminImportService
     // Helpers
     // ============================================================
     private static string? GetAttr(IFeature f, string key)
-        => f.Attributes.Exists(key) ? f.Attributes[key]?.ToString() : null;
+    {
+        if (f.Attributes.Exists(key)) return f.Attributes[key]?.ToString();
+        // Case-insensitive fallback
+        try
+        {
+            var names = f.Attributes.GetNames();
+            for (int i = 0; i < names.Length; i++)
+            {
+                if (string.Equals(names[i], key, StringComparison.OrdinalIgnoreCase))
+                {
+                    return f.Attributes[names[i]]?.ToString();
+                }
+            }
+        }
+        catch { }
+        return null;
+    }
 
     private static bool TryParseArcGisError(string json, out ArcGisError? err)
     {
@@ -584,6 +683,100 @@ public sealed class EsriAdminImportService
     private static string Truncate(string? s)
     {
         return string.IsNullOrWhiteSpace(s) ? "" : s.Length <= MaxErrorPayloadChars ? s : s[..MaxErrorPayloadChars] + "…(truncated)";
+    }
+
+    private static string EscapeCsv(string s)
+    {
+        return s.IndexOfAny([',', '"', '\n', '\r']) >= 0 ? '"' + s.Replace("\"", "\"\"") + '"' : s;
+    }
+
+    // Normalize polygon/multipolygon orientation for SQL Server geography
+    private static Geometry NormalizeGeographyPolygonOrientation(Geometry geometry)
+    {
+        if (geometry is Polygon p)
+            return NormalizePolygon(p);
+        if (geometry is MultiPolygon mp)
+        {
+            var factory = geometry.Factory;
+            var polys = new Polygon[mp.NumGeometries];
+            for (int i = 0; i < mp.NumGeometries; i++)
+                polys[i] = NormalizePolygon((Polygon)mp.GetGeometryN(i));
+            return factory.CreateMultiPolygon(polys);
+        }
+        if (geometry is GeometryCollection gc)
+        {
+            var factory = geometry.Factory;
+            var geoms = new Geometry[gc.NumGeometries];
+            for (int i = 0; i < gc.NumGeometries; i++)
+                geoms[i] = NormalizeGeographyPolygonOrientation(gc.GetGeometryN(i));
+            return factory.CreateGeometryCollection(geoms);
+        }
+        return geometry;
+
+        static Polygon NormalizePolygon(Polygon poly)
+        {
+            var factory = poly.Factory;
+
+            // Exterior ring: must be CCW
+            var shell = (LinearRing)poly.ExteriorRing;
+            var fixedShell = EnsureRingOrientation(shell, ccw: true);
+
+            // Holes: must be CW
+            var holes = new LinearRing[poly.NumInteriorRings];
+            for (int i = 0; i < poly.NumInteriorRings; i++)
+            {
+                var hole = (LinearRing)poly.GetInteriorRingN(i);
+                holes[i] = EnsureRingOrientation(hole, ccw: false);
+            }
+
+            return factory.CreatePolygon(fixedShell, holes);
+        }
+
+        static LinearRing EnsureRingOrientation(LinearRing ring, bool ccw)
+        {
+            var coords = ring.Coordinates;
+            bool isCcw = IsCcw(coords);
+            return ccw ? isCcw ? ring : (LinearRing)ring.Reverse() : isCcw ? (LinearRing)ring.Reverse() : ring;
+        }
+
+        static bool IsCcw(Coordinate[] coords)
+        {
+            // Shoelace formula signed area: >0 => CCW, <0 => CW
+            double area2 = 0; // 2 * area
+            for (int i = 0, j = (coords.Length - 1); i < coords.Length; j = i, i++)
+            {
+                area2 += (coords[j].X * coords[i].Y) - (coords[i].X * coords[j].Y);
+            }
+            return area2 > 0;
+        }
+    }
+
+    private static void EnsureSrid4326(Geometry g)
+    {
+        if (g is null) return;
+        g.SRID = 4326;
+        switch (g)
+        {
+            case Polygon p:
+                p.ExteriorRing.SRID = 4326;
+                for (int i = 0; i < p.NumInteriorRings; i++)
+                    p.GetInteriorRingN(i).SRID = 4326;
+                break;
+            case MultiPolygon mp:
+                for (int i = 0; i < mp.NumGeometries; i++)
+                    EnsureSrid4326(mp.GetGeometryN(i));
+                break;
+            case GeometryCollection gc:
+                for (int i = 0; i < gc.NumGeometries; i++)
+                    EnsureSrid4326(gc.GetGeometryN(i));
+                break;
+            case LineString ls:
+                ls.SRID = 4326;
+                break;
+            case Point pt:
+                pt.SRID = 4326;
+                break;
+        }
     }
 
     // ============================================================
@@ -619,36 +812,24 @@ public sealed class EsriAdminImportService
     // ============================================================
     // Exceptions tipadas para “mandarlas” al summary
     // ============================================================
-    private sealed class ImportStepException : Exception
+    private sealed class ImportStepException(
+        string iso3,
+        int level,
+        string stage,
+        string message,
+        string? payload,
+        int? httpStatus = null,
+        string? httpReason = null,
+EsriAdminImportService.ArcGisError? arcErr = null,
+        Exception? inner = null) : Exception(message, inner)
     {
-        public string Iso3 { get; }
-        public int Level { get; }
-        public string Stage { get; }
-        public int? HttpStatus { get; }
-        public string? HttpReason { get; }
-        public ArcGisError? ArcErr { get; }
-        public string? Payload { get; }
-
-        public ImportStepException(
-            string iso3,
-            int level,
-            string stage,
-            string message,
-            string? payload,
-            int? httpStatus = null,
-            string? httpReason = null,
-            ArcGisError? arcErr = null,
-            Exception? inner = null)
-            : base(message, inner)
-        {
-            Iso3 = iso3;
-            Level = level;
-            Stage = stage;
-            Payload = payload;
-            HttpStatus = httpStatus;
-            HttpReason = httpReason;
-            ArcErr = arcErr;
-        }
+        public string Iso3 { get; } = iso3;
+        public int Level { get; } = level;
+        public string Stage { get; } = stage;
+        public int? HttpStatus { get; } = httpStatus;
+        public string? HttpReason { get; } = httpReason;
+        public ArcGisError? ArcErr { get; } = arcErr;
+        public string? Payload { get; } = payload;
 
         public GeoImportErrorDto ToDto()
             => new()
@@ -669,15 +850,13 @@ public sealed class EsriAdminImportService
     // ============================================================
     // Circuit breaker por país
     // ============================================================
-    private sealed class CountryCircuitState
+    private sealed class CountryCircuitState(string iso3)
     {
-        public string Iso3 { get; }
+        public string Iso3 { get; } = iso3;
         public bool IsOpen { get; private set; }
 
         private int _currentLayer = -1;
         private int _failureStreak = 0;
-
-        public CountryCircuitState(string iso3) => Iso3 = iso3;
 
         public void ResetStreakOnLayerChange(int layer)
         {
@@ -721,18 +900,10 @@ public sealed class EsriAdminImportService
         }
     }
 
-    private sealed class CircuitBreakerOpenException : Exception
+    private sealed class CircuitBreakerOpenException(string iso3, int level, string message, string? payload) : Exception(message)
     {
-        public string Iso3 { get; }
-        public int Level { get; }
-        public string? Payload { get; }
-
-        public CircuitBreakerOpenException(string iso3, int level, string message, string? payload)
-            : base(message)
-        {
-            Iso3 = iso3;
-            Level = level;
-            Payload = payload;
-        }
+        public string Iso3 { get; } = iso3;
+        public int Level { get; } = level;
+        public string? Payload { get; } = payload;
     }
 }

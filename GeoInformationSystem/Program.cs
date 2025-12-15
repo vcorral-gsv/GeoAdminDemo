@@ -31,18 +31,21 @@ builder.Services.AddScoped<GeoResolveService>();
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(c =>
+{
+    var xml = Path.Combine(AppContext.BaseDirectory, "GeoAdminDemo.xml");
+    if (File.Exists(xml))
+        c.IncludeXmlComments(xml, includeControllerXmlComments: true);
+});
 
 var app = builder.Build();
 
 // Middleware de excepciones (antes de todo)
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+// Swagger siempre activo (útil para Azure)
+app.UseSwagger();
+app.UseSwaggerUI();
 
 app.UseHttpsRedirection();
 app.UseAuthorization();

@@ -1,0 +1,80 @@
+{
+  "info": {
+    "name": "Geo Admin Demo",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Import ESRI",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "X-ArcGIS-Auth", "value": "{{arcgisAuth}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/geo/import/esri?hardReset=false&iso3={{iso3}}&maxLevel=4",
+          "host": ["{{baseUrl}}"],
+          "path": ["api","geo","import","esri"],
+          "query": [
+            {"key":"hardReset","value":"false"},
+            {"key":"iso3","value":"{{iso3}}"},
+            {"key":"maxLevel","value":"4"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "List Admin Areas",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/geo/admin-areas?countryIso3={{iso3}}&level=2&skip=0&take=50&q=Sev",
+          "host": ["{{baseUrl}}"],
+          "path": ["api","geo","admin-areas"],
+          "query": [
+            {"key":"countryIso3","value":"{{iso3}}"},
+            {"key":"level","value":"2"},
+            {"key":"skip","value":"0"},
+            {"key":"take","value":"50"},
+            {"key":"q","value":"Sev"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Resolve Point",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/geo/resolve-point?lat=40.4&lon=-3.7&iso3={{iso3}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api","geo","resolve-point"],
+          "query": [
+            {"key":"lat","value":"40.4"},
+            {"key":"lon","value":"-3.7"},
+            {"key":"iso3","value":"{{iso3}}"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Geometry GeoJSON",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/geo/admin-areas/1/geometry-geojson?zoom=10",
+          "host": ["{{baseUrl}}"],
+          "path": ["api","geo","admin-areas","1","geometry-geojson"],
+          "query": [
+            {"key":"zoom","value":"10"}
+          ]
+        }
+      }
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5000" },
+    { "key": "iso3", "value": "ESP" },
+    { "key": "arcgisAuth", "value": "" }
+  ]
+}

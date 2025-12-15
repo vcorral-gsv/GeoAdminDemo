@@ -26,7 +26,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.LevelLabel).HasMaxLength(1024);
             e.Property(x => x.Source).HasMaxLength(128);
 
-            // ✅ Spatial
+            // Spatial geography column
             e.Property(x => x.Geometry)
                 .HasColumnType("geography");
 
@@ -34,8 +34,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
              .WithMany(x => x.Children)
              .HasForeignKey(x => x.ParentId)
              .OnDelete(DeleteBehavior.Restrict);
-
-            modelBuilder.Entity<AdminAreaCteRow>().HasNoKey();
         });
+
+        // Keyless type used to materialize recursive CTE results
+        modelBuilder.Entity<AdminAreaCteRow>().HasNoKey();
     }
 }

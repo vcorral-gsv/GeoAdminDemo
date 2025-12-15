@@ -1,5 +1,6 @@
 ﻿using GeoAdminDemo.Data;
 using GeoAdminDemo.Dtos;
+using GeoAdminDemo.Data.QueryTypes;
 using Microsoft.EntityFrameworkCore;
 using NetTopologySuite;
 using NetTopologySuite.Geometries;
@@ -15,9 +16,9 @@ public sealed class GeoResolveService(AppDbContext db)
 
     private static readonly GeoJsonWriter GeoJsonWriter = new();
 
-    // ------------------------------
-    // RESOLVE (roundtrips) - EXISTENTE
-    // ------------------------------
+    /// <summary>
+    /// Resolves an administrative path for a point using iterative parent lookups.
+    /// </summary>
     public async Task<ResolvePointResponseDto> ResolvePointSqlAsync(
         double lat,
         double lon,
@@ -79,9 +80,9 @@ public sealed class GeoResolveService(AppDbContext db)
         return new ResolvePointResponseDto { CountryIso3 = iso3, Path = pathReversed };
     }
 
-    // ------------------------------
-    // RESOLVE (CTE recursivo) - NUEVO (1 roundtrip para subir parents)
-    // ------------------------------
+    /// <summary>
+    /// Resolves an administrative path using a recursive CTE for parent traversal in a single roundtrip.
+    /// </summary>
     public async Task<ResolvePointResponseDto> ResolvePointSqlCteAsync(
         double lat,
         double lon,
@@ -113,7 +114,6 @@ public sealed class GeoResolveService(AppDbContext db)
         }
 
         // 2) CTE: leaf -> padres (una sola query)
-        // Usamos RAW SQL con parámetros (FromSqlInterpolated) para evitar inyección.
         var nodes = await db.AdminAreaCteRows
             .FromSqlInterpolated($@"
 WITH cte AS (
@@ -175,21 +175,9 @@ FROM cte;
         return new ResolvePointResponseDto { CountryIso3 = iso3, Path = ordered };
     }
 
-    // CTE row: keyless entity para mapear el SELECT del CTE
-    [Keyless]
-    private sealed class AdminAreaCteRow
-    {
-        public long Id { get; set; }
-        public long? ParentId { get; set; }
-        public int Level { get; set; }
-        public string Code { get; set; } = default!;
-        public string Name { get; set; } = default!;
-        public string? LevelLabel { get; set; }
-    }
-
-    // ------------------------------
-    // GEOMETRY → GEOJSON (EXISTENTE)
-    // ------------------------------
+    /// <summary>
+    /// Returns GeoJSON for an admin area, optionally simplified for map zoom/tolerance.
+    /// </summary>
     public async Task<AdminAreaGeoJsonDto?> GetGeometryGeoJsonAsync(
         long id,
         double? zoom,
